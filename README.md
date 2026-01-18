@@ -4,10 +4,10 @@
 
 **A production-ready RESTful API boilerplate built with Go, following Clean Architecture principles.**
 
-[![Go Version](https://img.shields.io/badge/Go-1.21-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.23-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Gin](https://img.shields.io/badge/Gin-v1.9.1-blue?style=for-the-badge)](https://gin-gonic.com/)
-[![GORM](https://img.shields.io/badge/GORM-v1.25.7-red?style=for-the-badge)](https://gorm.io/)
+[![Gin](https://img.shields.io/badge/Gin-v1.10.0-blue?style=for-the-badge)](https://gin-gonic.com/)
+[![GORM](https://img.shields.io/badge/GORM-v1.25.12-red?style=for-the-badge)](https://gorm.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -109,7 +109,7 @@ golang-boilerplate/
 
 ### Prerequisites
 
-- [Go](https://go.dev/dl/) 1.21 or higher
+- [Go](https://go.dev/dl/) 1.23 or higher
 - [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/) (optional)
 - [PostgreSQL](https://www.postgresql.org/) 15+ (if running without Docker)
 
