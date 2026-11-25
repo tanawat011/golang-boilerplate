@@ -1,39 +1,51 @@
 package model
 
-// User represents a user in the system
+import "time"
+
+// User roles.
+const (
+	RoleUser  = "user"
+	RoleAdmin = "admin"
+)
+
+// User represents a user in the system.
 type User struct {
 	Base
-	Username string `json:"username" gorm:"uniqueIndex;not null;size:50"`
-	Email    string `json:"email" gorm:"uniqueIndex;not null;size:100"`
-	Password string `json:"-" gorm:"not null"` // "-" hides password from JSON
-	FullName string `json:"full_name" gorm:"size:100"`
-	Role     string `json:"role" gorm:"default:user;size:20"`
-	IsActive bool   `json:"is_active" gorm:"default:true"`
+	Username string `gorm:"uniqueIndex;not null;size:50"`
+	Email    string `gorm:"uniqueIndex;not null;size:100"`
+	Password string `gorm:"not null"` // bcrypt hash, never serialised
+	FullName string `gorm:"size:100"`
+	Role     string `gorm:"not null;default:user;size:20"`
+	IsActive bool   `gorm:"not null;default:true"`
 }
 
-// TableName overrides the table name
+// TableName overrides the table name.
 func (User) TableName() string {
 	return "users"
 }
 
-// UserResponse is the response format for user data (without sensitive fields)
+// UserResponse is the public representation of a user (no password hash).
 type UserResponse struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	FullName string `json:"full_name"`
-	Role     string `json:"role"`
-	IsActive bool   `json:"is_active"`
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	FullName  string    `json:"full_name"`
+	Role      string    `json:"role"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// ToResponse converts User model to UserResponse
+// ToResponse converts a User to its public representation.
 func (u *User) ToResponse() UserResponse {
 	return UserResponse{
-		ID:       u.ID,
-		Username: u.Username,
-		Email:    u.Email,
-		FullName: u.FullName,
-		Role:     u.Role,
-		IsActive: u.IsActive,
+		ID:        u.ID,
+		Username:  u.Username,
+		Email:     u.Email,
+		FullName:  u.FullName,
+		Role:      u.Role,
+		IsActive:  u.IsActive,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
 	}
 }

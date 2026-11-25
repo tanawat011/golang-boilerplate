@@ -1,7 +1,9 @@
+// Command api runs the HTTP API server.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,103 +15,143 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
+	"github.com/tanawat011/golang-boilerplate/internal/auth"
 	"github.com/tanawat011/golang-boilerplate/internal/config"
 	"github.com/tanawat011/golang-boilerplate/internal/model"
+	"github.com/tanawat011/golang-boilerplate/internal/repository"
 	"github.com/tanawat011/golang-boilerplate/internal/router"
+	"github.com/tanawat011/golang-boilerplate/internal/service"
 )
 
 func main() {
-	// Load configuration
-	cfg := config.Load()
-
-	// Initialize logger
-	logger, err := initLogger(cfg.App.Mode)
-	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
-	defer logger.Sync()
+}
 
-	logger.Info("Starting application",
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	logger, err := newLogger(cfg.IsProduction())
+	if err != nil {
+		return fmt.Errorf("init logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	logger.Info("starting",
 		zap.String("name", cfg.App.Name),
 		zap.String("version", cfg.App.Version),
 		zap.String("mode", cfg.App.Mode),
 	)
 
-	// Connect to database
-	db, err := connectDatabase(cfg)
+	db, err := openDatabase(cfg)
 	if err != nil {
-		logger.Fatal("Failed to connect to database", zap.Error(err))
+		return err
 	}
-	logger.Info("Database connected successfully")
-
-	// Auto-migrate models
-	if err := db.AutoMigrate(&model.User{}); err != nil {
-		logger.Fatal("Failed to auto-migrate models", zap.Error(err))
-	}
-	logger.Info("Database migration completed")
-
-	// Setup router
-	r := router.Setup(cfg, db, logger)
-
-	// Create HTTP server
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.App.Port),
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	// Start server in a goroutine
-	go func() {
-		logger.Info("Server is running", zap.String("port", cfg.App.Port))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start server", zap.Error(err))
-		}
-	}()
-
-	// Graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	logger.Info("Shutting down server...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Fatal("Server forced to shutdown", zap.Error(err))
-	}
-
-	logger.Info("Server exited gracefully")
-}
-
-// initLogger creates a zap logger based on the application mode
-func initLogger(mode string) (*zap.Logger, error) {
-	if mode == "production" {
-		return zap.NewProduction()
-	}
-	return zap.NewDevelopment()
-}
-
-// connectDatabase establishes a connection to PostgreSQL
-func connectDatabase(cfg *config.Config) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(cfg.Database.GetDSN()), &gorm.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Configure connection pool
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get database instance: %w", err)
+		return err
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	if err := db.AutoMigrate(&model.User{}); err != nil {
+		return fmt.Errorf("auto-migrate: %w", err)
 	}
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	tokens := auth.NewTokenManager(cfg.JWT.Secret, cfg.JWT.Expiration, cfg.JWT.Issuer)
+	userRepo := repository.NewUserRepository(db)
+	authService, err := service.NewAuthService(userRepo, tokens, cfg.Auth.BcryptCost)
+	if err != nil {
+		return err
+	}
 
+	engine, err := router.New(router.Deps{
+		Config: cfg,
+		Logger: logger,
+		Tokens: tokens,
+		Auth:   authService,
+		Users:  service.NewUserService(userRepo),
+		DB:     sqlDB,
+	})
+	if err != nil {
+		return err
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.App.Port,
+		Handler:           engine,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("listening", zap.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("server: %w", err)
+	case <-ctx.Done():
+	}
+
+	logger.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	logger.Info("stopped")
+	return nil
+}
+
+func newLogger(production bool) (*zap.Logger, error) {
+	if production {
+		return zap.NewProduction()
+	}
+	// Development: human-readable, stack traces only for errors (not for
+	// every 4xx logged at warn level).
+	return zap.NewDevelopmentConfig().Build(zap.AddStacktrace(zap.ErrorLevel))
+}
+
+func openDatabase(cfg *config.Config) (*gorm.DB, error) {
+	logLevel := gormlogger.Warn
+	if cfg.IsProduction() {
+		logLevel = gormlogger.Error
+	}
+	db, err := gorm.Open(postgres.Open(cfg.Database.DSN()), &gorm.Config{
+		TranslateError: true,
+		Logger: gormlogger.New(log.New(os.Stderr, "", log.LstdFlags), gormlogger.Config{
+			SlowThreshold:             500 * time.Millisecond,
+			LogLevel:                  logLevel,
+			IgnoreRecordNotFoundError: true, // "not found" is a normal answer
+			ParameterizedQueries:      true, // never log values (emails, hashes)
+		}),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(50)
+	sqlDB.SetConnMaxLifetime(time.Hour)
 	return db, nil
 }

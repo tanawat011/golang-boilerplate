@@ -1,3 +1,4 @@
+// Package pagination reads page / limit query parameters.
 package pagination
 
 import (

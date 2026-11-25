@@ -5,123 +5,81 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tanawat011/golang-boilerplate/internal/middleware"
 	"github.com/tanawat011/golang-boilerplate/internal/service"
 	"github.com/tanawat011/golang-boilerplate/pkg/pagination"
-	"github.com/tanawat011/golang-boilerplate/pkg/validator"
 )
 
-// UserHandler handles HTTP requests related to users
+// UserHandler handles the /users endpoints. Every route requires Auth.
 type UserHandler struct {
-	userService service.UserService
+	users service.UserService
 }
 
-// NewUserHandler creates a new user handler
-func NewUserHandler(userService service.UserService) *UserHandler {
-	return &UserHandler{userService: userService}
+// NewUserHandler creates a UserHandler.
+func NewUserHandler(users service.UserService) *UserHandler {
+	return &UserHandler{users: users}
 }
 
-// Create handles POST /api/v1/users
-func (h *UserHandler) Create(c *gin.Context) {
-	var req service.CreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ErrorResponse(c, http.StatusBadRequest, "Invalid request body", err.Error())
-		return
-	}
-
-	if errors := validator.ValidateStruct(req); errors != nil {
-		ValidationErrorResponse(c, errors)
-		return
-	}
-
-	user, err := h.userService.Create(req)
-	if err != nil {
-		switch err {
-		case service.ErrEmailAlreadyExists:
-			ErrorResponse(c, http.StatusConflict, err.Error(), nil)
-		case service.ErrUsernameExists:
-			ErrorResponse(c, http.StatusConflict, err.Error(), nil)
-		default:
-			ErrorResponse(c, http.StatusInternalServerError, "Failed to create user", err.Error())
-		}
-		return
-	}
-
-	SuccessResponse(c, http.StatusCreated, "User created successfully", user)
-}
-
-// GetByID handles GET /api/v1/users/:id
-func (h *UserHandler) GetByID(c *gin.Context) {
-	id := c.Param("id")
-
-	user, err := h.userService.GetByID(id)
-	if err != nil {
-		if err == service.ErrUserNotFound {
-			ErrorResponse(c, http.StatusNotFound, err.Error(), nil)
-			return
-		}
-		ErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve user", err.Error())
-		return
-	}
-
-	SuccessResponse(c, http.StatusOK, "User retrieved successfully", user)
-}
-
-// GetAll handles GET /api/v1/users
-func (h *UserHandler) GetAll(c *gin.Context) {
+// List handles GET /api/v1/users (admin only).
+func (h *UserHandler) List(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
 	page, limit := pagination.GetPaginationParams(c)
 
-	users, total, err := h.userService.GetAll(page, limit)
+	users, total, err := h.users.List(c.Request.Context(), actor, page, limit)
 	if err != nil {
-		ErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve users", err.Error())
+		writeServiceError(c, err)
 		return
 	}
-
 	PaginatedResponse(c, users, page, limit, total)
 }
 
-// Update handles PUT /api/v1/users/:id
-func (h *UserHandler) Update(c *gin.Context) {
-	id := c.Param("id")
-
-	var req service.UpdateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ErrorResponse(c, http.StatusBadRequest, "Invalid request body", err.Error())
+// GetByID handles GET /api/v1/users/:id.
+func (h *UserHandler) GetByID(c *gin.Context) {
+	id, ok := userIDParam(c)
+	if !ok {
 		return
 	}
+	actor, _ := middleware.ActorFrom(c)
 
-	if errors := validator.ValidateStruct(req); errors != nil {
-		ValidationErrorResponse(c, errors)
-		return
-	}
-
-	user, err := h.userService.Update(id, req)
+	user, err := h.users.GetByID(c.Request.Context(), actor, id)
 	if err != nil {
-		switch err {
-		case service.ErrUserNotFound:
-			ErrorResponse(c, http.StatusNotFound, err.Error(), nil)
-		case service.ErrEmailAlreadyExists, service.ErrUsernameExists:
-			ErrorResponse(c, http.StatusConflict, err.Error(), nil)
-		default:
-			ErrorResponse(c, http.StatusInternalServerError, "Failed to update user", err.Error())
-		}
+		writeServiceError(c, err)
 		return
 	}
+	SuccessResponse(c, http.StatusOK, "User retrieved successfully", user)
+}
 
+// Update handles PATCH /api/v1/users/:id.
+func (h *UserHandler) Update(c *gin.Context) {
+	id, ok := userIDParam(c)
+	if !ok {
+		return
+	}
+	var req service.UpdateUserRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	actor, _ := middleware.ActorFrom(c)
+
+	user, err := h.users.Update(c.Request.Context(), actor, id, req)
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
 	SuccessResponse(c, http.StatusOK, "User updated successfully", user)
 }
 
-// Delete handles DELETE /api/v1/users/:id
+// Delete handles DELETE /api/v1/users/:id.
 func (h *UserHandler) Delete(c *gin.Context) {
-	id := c.Param("id")
-
-	if err := h.userService.Delete(id); err != nil {
-		if err == service.ErrUserNotFound {
-			ErrorResponse(c, http.StatusNotFound, err.Error(), nil)
-			return
-		}
-		ErrorResponse(c, http.StatusInternalServerError, "Failed to delete user", err.Error())
+	id, ok := userIDParam(c)
+	if !ok {
 		return
 	}
+	actor, _ := middleware.ActorFrom(c)
 
+	if err := h.users.Delete(c.Request.Context(), actor, id); err != nil {
+		writeServiceError(c, err)
+		return
+	}
 	SuccessResponse(c, http.StatusOK, "User deleted successfully", nil)
 }

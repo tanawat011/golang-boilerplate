@@ -1,3 +1,4 @@
+// Package model holds the GORM models.
 package model
 
 import (
@@ -7,18 +8,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// Base contains common columns for all tables
+// Base contains common columns for all tables.
 type Base struct {
-	ID        string         `json:"id" gorm:"type:uuid;primary_key"`
-	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
+	ID        string         `gorm:"type:uuid;primaryKey"`
+	CreatedAt time.Time      `gorm:"autoCreateTime"`
+	UpdatedAt time.Time      `gorm:"autoUpdateTime"`
+	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
-// BeforeCreate will set a UUID rather than numeric ID
-func (b *Base) BeforeCreate(tx *gorm.DB) error {
+// BeforeCreate sets a UUID primary key when none is given.
+func (b *Base) BeforeCreate(*gorm.DB) error {
 	if b.ID == "" {
-		b.ID = uuid.New().String()
+		b.ID = uuid.NewString()
 	}
 	return nil
 }

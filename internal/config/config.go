@@ -1,134 +1,216 @@
+// Package config loads application settings from environment variables
+// (and an optional .env file) and validates them before the app starts.
 package config
 
 import (
-	"log"
-	"sync"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
-// Config holds all configuration for the application
+// ModeProduction is the APP_MODE value that turns on production behaviour
+// (release-mode Gin, JSON logs, HSTS, strict secret checks).
+const ModeProduction = "production"
+
+// minJWTSecretLength is the shortest HS256 secret the app accepts (256 bits).
+const minJWTSecretLength = 32
+
+// placeholderSecrets are the example values shipped in .env.example and
+// docker-compose.yml. They are fine for local development but refused in
+// production mode.
+var placeholderSecrets = map[string]bool{
+	"change-me-to-a-random-string-of-at-least-32-characters": true,
+	"dev-only-insecure-jwt-secret-do-not-use-in-production":  true,
+}
+
+// Config holds all configuration for the application.
 type Config struct {
 	App      AppConfig
 	Database DatabaseConfig
-	Redis    RedisConfig
 	JWT      JWTConfig
+	Auth     AuthConfig
 }
 
-// AppConfig holds application-specific configuration
+// AppConfig holds HTTP server and runtime settings.
 type AppConfig struct {
-	Name    string `mapstructure:"APP_NAME"`
-	Port    string `mapstructure:"APP_PORT"`
-	Mode    string `mapstructure:"APP_MODE"`
-	Version string `mapstructure:"APP_VERSION"`
+	Name           string
+	Port           string
+	Mode           string
+	Version        string
+	CORSOrigins    []string
+	TrustedProxies []string
 }
 
-// DatabaseConfig holds database-specific configuration
+// DatabaseConfig holds PostgreSQL connection settings.
 type DatabaseConfig struct {
-	Host     string `mapstructure:"DB_HOST"`
-	Port     string `mapstructure:"DB_PORT"`
-	User     string `mapstructure:"DB_USER"`
-	Password string `mapstructure:"DB_PASSWORD"`
-	Name     string `mapstructure:"DB_NAME"`
-	SSLMode  string `mapstructure:"DB_SSL_MODE"`
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Name     string
+	SSLMode  string
+	TimeZone string
 }
 
-// RedisConfig holds Redis-specific configuration
-type RedisConfig struct {
-	Host     string `mapstructure:"REDIS_HOST"`
-	Port     string `mapstructure:"REDIS_PORT"`
-	Password string `mapstructure:"REDIS_PASSWORD"`
-	DB       int    `mapstructure:"REDIS_DB"`
-}
-
-// JWTConfig holds JWT-specific configuration
+// JWTConfig holds access-token settings.
 type JWTConfig struct {
-	Secret          string `mapstructure:"JWT_SECRET"`
-	ExpirationHours int    `mapstructure:"JWT_EXPIRATION_HOURS"`
-	Issuer          string `mapstructure:"JWT_ISSUER"`
+	Secret     string
+	Expiration time.Duration
+	Issuer     string
 }
 
-var (
-	once     sync.Once
-	instance *Config
-)
+// AuthConfig holds password hashing and brute-force protection settings.
+type AuthConfig struct {
+	BcryptCost         int
+	RateLimitPerMinute int
+}
 
-// Load reads configuration from environment variables and .env file
-func Load() *Config {
-	once.Do(func() {
-		viper.SetConfigFile(".env")
-		viper.AutomaticEnv()
+// IsProduction reports whether the app runs in production mode.
+func (c *Config) IsProduction() bool {
+	return c.App.Mode == ModeProduction
+}
 
-		if err := viper.ReadInConfig(); err != nil {
-			log.Printf("Warning: .env file not found, using environment variables: %v", err)
+// Load reads configuration from the environment. Values in a .env file in the
+// working directory are used when present; real environment variables win.
+func Load() (*Config, error) {
+	v := viper.New()
+	v.SetConfigFile(".env")
+	v.SetConfigType("env")
+	v.AutomaticEnv()
+	setDefaults(v)
+
+	if err := v.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		// A missing .env is normal in containers; anything else is a real error.
+		if !errors.As(err, &notFound) && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("read .env: %w", err)
 		}
+	}
 
-		// Set default values
-		setDefaults()
+	expiration, err := time.ParseDuration(v.GetString("JWT_EXPIRATION"))
+	if err != nil {
+		return nil, fmt.Errorf("JWT_EXPIRATION: %w", err)
+	}
 
-		instance = &Config{
-			App: AppConfig{
-				Name:    viper.GetString("APP_NAME"),
-				Port:    viper.GetString("APP_PORT"),
-				Mode:    viper.GetString("APP_MODE"),
-				Version: viper.GetString("APP_VERSION"),
-			},
-			Database: DatabaseConfig{
-				Host:     viper.GetString("DB_HOST"),
-				Port:     viper.GetString("DB_PORT"),
-				User:     viper.GetString("DB_USER"),
-				Password: viper.GetString("DB_PASSWORD"),
-				Name:     viper.GetString("DB_NAME"),
-				SSLMode:  viper.GetString("DB_SSL_MODE"),
-			},
-			Redis: RedisConfig{
-				Host:     viper.GetString("REDIS_HOST"),
-				Port:     viper.GetString("REDIS_PORT"),
-				Password: viper.GetString("REDIS_PASSWORD"),
-				DB:       viper.GetInt("REDIS_DB"),
-			},
-			JWT: JWTConfig{
-				Secret:          viper.GetString("JWT_SECRET"),
-				ExpirationHours: viper.GetInt("JWT_EXPIRATION_HOURS"),
-				Issuer:          viper.GetString("JWT_ISSUER"),
-			},
+	cfg := &Config{
+		App: AppConfig{
+			Name:           v.GetString("APP_NAME"),
+			Port:           v.GetString("APP_PORT"),
+			Mode:           v.GetString("APP_MODE"),
+			Version:        v.GetString("APP_VERSION"),
+			CORSOrigins:    splitList(v.GetString("CORS_ALLOWED_ORIGINS")),
+			TrustedProxies: splitList(v.GetString("TRUSTED_PROXIES")),
+		},
+		Database: DatabaseConfig{
+			Host:     v.GetString("DB_HOST"),
+			Port:     v.GetString("DB_PORT"),
+			User:     v.GetString("DB_USER"),
+			Password: v.GetString("DB_PASSWORD"),
+			Name:     v.GetString("DB_NAME"),
+			SSLMode:  v.GetString("DB_SSL_MODE"),
+			TimeZone: v.GetString("DB_TIMEZONE"),
+		},
+		JWT: JWTConfig{
+			Secret:     v.GetString("JWT_SECRET"),
+			Expiration: expiration,
+			Issuer:     v.GetString("JWT_ISSUER"),
+		},
+		Auth: AuthConfig{
+			BcryptCost:         v.GetInt("BCRYPT_COST"),
+			RateLimitPerMinute: v.GetInt("AUTH_RATE_LIMIT_PER_MINUTE"),
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// Validate checks that the configuration is safe to run with.
+func (c *Config) Validate() error {
+	var problems []string
+
+	switch {
+	case c.JWT.Secret == "":
+		problems = append(problems, "JWT_SECRET is required")
+	case len(c.JWT.Secret) < minJWTSecretLength:
+		problems = append(problems, fmt.Sprintf("JWT_SECRET must be at least %d characters", minJWTSecretLength))
+	case c.IsProduction() && placeholderSecrets[c.JWT.Secret]:
+		problems = append(problems, "JWT_SECRET is still the example value; set a random secret for production")
+	}
+	if c.JWT.Expiration <= 0 {
+		problems = append(problems, "JWT_EXPIRATION must be positive")
+	}
+	if c.Auth.BcryptCost < 10 || c.Auth.BcryptCost > 31 {
+		problems = append(problems, "BCRYPT_COST must be between 10 and 31")
+	}
+	if c.Auth.RateLimitPerMinute <= 0 {
+		problems = append(problems, "AUTH_RATE_LIMIT_PER_MINUTE must be positive")
+	}
+	if c.Database.Host == "" || c.Database.Name == "" {
+		problems = append(problems, "DB_HOST and DB_NAME are required")
+	}
+
+	if len(problems) > 0 {
+		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// DSN returns the PostgreSQL connection URL. Every part is escaped, so
+// passwords may contain any character.
+func (d *DatabaseConfig) DSN() string {
+	q := url.Values{}
+	q.Set("sslmode", d.SSLMode)
+	if d.TimeZone != "" {
+		q.Set("TimeZone", d.TimeZone)
+	}
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(d.User, d.Password),
+		Host:     d.Host + ":" + d.Port,
+		Path:     "/" + d.Name,
+		RawQuery: q.Encode(),
+	}
+	return u.String()
+}
+
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("APP_NAME", "golang-boilerplate")
+	v.SetDefault("APP_PORT", "8080")
+	v.SetDefault("APP_MODE", "development")
+	v.SetDefault("APP_VERSION", "dev")
+	v.SetDefault("CORS_ALLOWED_ORIGINS", "")
+	v.SetDefault("TRUSTED_PROXIES", "")
+
+	v.SetDefault("DB_HOST", "localhost")
+	v.SetDefault("DB_PORT", "15432")
+	v.SetDefault("DB_USER", "postgres")
+	v.SetDefault("DB_PASSWORD", "")
+	v.SetDefault("DB_NAME", "golang_boilerplate")
+	v.SetDefault("DB_SSL_MODE", "disable")
+	v.SetDefault("DB_TIMEZONE", "UTC")
+
+	v.SetDefault("JWT_SECRET", "")
+	v.SetDefault("JWT_EXPIRATION", "1h")
+	v.SetDefault("JWT_ISSUER", "golang-boilerplate")
+
+	v.SetDefault("BCRYPT_COST", 12)
+	v.SetDefault("AUTH_RATE_LIMIT_PER_MINUTE", 10)
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
 		}
-	})
-
-	return instance
-}
-
-// setDefaults sets default values for configuration
-func setDefaults() {
-	viper.SetDefault("APP_NAME", "golang-boilerplate")
-	viper.SetDefault("APP_PORT", "8080")
-	viper.SetDefault("APP_MODE", "development")
-	viper.SetDefault("APP_VERSION", "1.0.0")
-
-	viper.SetDefault("DB_HOST", "localhost")
-	viper.SetDefault("DB_PORT", "5432")
-	viper.SetDefault("DB_USER", "postgres")
-	viper.SetDefault("DB_PASSWORD", "postgres")
-	viper.SetDefault("DB_NAME", "golang_boilerplate")
-	viper.SetDefault("DB_SSL_MODE", "disable")
-
-	viper.SetDefault("REDIS_HOST", "localhost")
-	viper.SetDefault("REDIS_PORT", "6379")
-	viper.SetDefault("REDIS_PASSWORD", "")
-	viper.SetDefault("REDIS_DB", 0)
-
-	viper.SetDefault("JWT_SECRET", "your-secret-key-change-in-production")
-	viper.SetDefault("JWT_EXPIRATION_HOURS", 24)
-	viper.SetDefault("JWT_ISSUER", "golang-boilerplate")
-}
-
-// GetDSN returns the database connection string
-func (d *DatabaseConfig) GetDSN() string {
-	return "host=" + d.Host +
-		" user=" + d.User +
-		" password=" + d.Password +
-		" dbname=" + d.Name +
-		" port=" + d.Port +
-		" sslmode=" + d.SSLMode +
-		" TimeZone=Asia/Bangkok"
+	}
+	return out
 }
