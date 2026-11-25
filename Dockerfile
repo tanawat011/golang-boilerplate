@@ -1,33 +1,19 @@
-# Build stage
-FROM golang:1.23-alpine AS builder
+# syntax=docker/dockerfile:1
 
-RUN apk add --no-cache gcc musl-dev
+# ---- build ----
+FROM golang:1.27-alpine AS build
+WORKDIR /src
 
-WORKDIR /app
-
-# Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api
-
-# Runtime stage
-FROM alpine:3.19
-
-RUN apk --no-cache add ca-certificates tzdata
-
-WORKDIR /app
-
-# Copy binary from builder
-COPY --from=builder /app/main .
-COPY --from=builder /app/.env.example .env
-
-# Expose port
+# ---- run ----
+# Static binary on distroless: no shell, no package manager, runs as non-root.
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=build /out/api /api
 EXPOSE 8080
-
-# Run the application
-CMD ["./main"]
+USER nonroot:nonroot
+ENTRYPOINT ["/api"]

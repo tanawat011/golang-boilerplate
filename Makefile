@@ -1,66 +1,72 @@
-.PHONY: run build test lint clean docker-up docker-down migrate help
+.PHONY: help run build test test-integration cover lint vuln fmt vet tidy docker-up docker-down docker-logs db-up clean
 
-# Variables
-APP_NAME=golang-boilerplate
-MAIN_PATH=./cmd/api
+APP_NAME  := golang-boilerplate
+MAIN_PATH := ./cmd/api
+# Admin connection used by the integration tests (each test creates and drops
+# its own database). Matches the PostgreSQL started by `make db-up`.
+TEST_DATABASE_URL ?= postgres://postgres:postgres@127.0.0.1:15432/postgres?sslmode=disable
 
-## help: Show this help message
+## help: Show this help
 help:
-	@echo "Usage: make [target]"
-	@echo ""
-	@echo "Targets:"
 	@sed -n 's/^## //p' $(MAKEFILE_LIST) | column -t -s ':' | sed -e 's/^/  /'
 
-## run: Run the application
+## run: Run the API on the host (needs .env and a database: make db-up)
 run:
 	go run $(MAIN_PATH)
 
-## build: Build the application binary
+## build: Build the binary into bin/
 build:
-	CGO_ENABLED=0 go build -o bin/$(APP_NAME) $(MAIN_PATH)
+	CGO_ENABLED=0 go build -trimpath -o bin/$(APP_NAME) $(MAIN_PATH)
 
-## test: Run all tests
+## test: Run unit tests (no database needed)
 test:
-	go test ./... -v -cover
+	go test -race ./...
 
-## test-coverage: Run tests with coverage report
-test-coverage:
-	go test ./... -coverprofile=coverage.out
+## test-integration: Run integration tests against PostgreSQL (make db-up first)
+test-integration:
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race -tags integration ./...
+
+## cover: Unit test coverage report (coverage.html)
+cover:
+	go test -coverpkg=./... -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-## lint: Run linter
+## lint: Run golangci-lint
 lint:
 	golangci-lint run ./...
 
-## clean: Clean build artifacts
-clean:
-	rm -rf bin/
-	rm -f coverage.out coverage.html
+## vuln: Check dependencies for known vulnerabilities
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-## docker-up: Start all services with Docker Compose
-docker-up:
-	docker-compose up -d --build
-
-## docker-down: Stop all Docker Compose services
-docker-down:
-	docker-compose down
-
-## docker-logs: View Docker Compose logs
-docker-logs:
-	docker-compose logs -f
-
-## migrate: Run database migrations
-migrate:
-	go run $(MAIN_PATH) migrate
-
-## tidy: Tidy Go modules
-tidy:
-	go mod tidy
-
-## fmt: Format Go code
+## fmt: Format the code
 fmt:
 	gofmt -s -w .
 
 ## vet: Run go vet
 vet:
-	go vet ./...
+	go vet -tags integration ./...
+
+## tidy: Tidy go.mod / go.sum
+tidy:
+	go mod tidy
+
+## db-up: Start only PostgreSQL (127.0.0.1:15432)
+db-up:
+	docker compose up -d --wait postgres
+
+## docker-up: Build and start the API and PostgreSQL
+docker-up:
+	docker compose up -d --build --wait
+
+## docker-down: Stop the stack (add -v to the command to drop the data volume)
+docker-down:
+	docker compose down
+
+## docker-logs: Follow the logs
+docker-logs:
+	docker compose logs -f
+
+## clean: Remove build artefacts
+clean:
+	rm -rf bin/ coverage.out coverage.html
