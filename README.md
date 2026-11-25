@@ -171,10 +171,11 @@ so they never touch your development data.
 
 ## History
 
-Started in December 2018 (the first commit is on the `master` branch). The
-current Clean Architecture codebase on `main` dates from January 2024. Refreshed
-in November 2026: Go 1.26+, updated dependencies, auth endpoints and access
-rules, secure defaults, tests and CI.
+The repository was created in December 2018; that first version, a
+gorilla/mux skeleton, is kept on the `master` branch. The current Gin / Clean
+Architecture codebase on `main` dates from January 2024. Refreshed in November
+2026: Go 1.26+, updated dependencies, auth endpoints and access rules, secure
+defaults, tests and CI.
 
 ## License
 
