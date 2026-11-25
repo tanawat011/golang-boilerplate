@@ -169,6 +169,19 @@ so they never touch your development data.
   effect when the user's current token expires (`JWT_EXPIRATION`). Add
   refresh tokens or a deny-list if you need instant revocation.
 
+## Upgrading from the old version
+
+The November 2026 refresh changes the API. In short:
+
+- `PUT /api/v1/users/:id` is now `PATCH`.
+- Every `/users` route needs sign-in (`Authorization: Bearer <token>`);
+  `GET /users` is admin only.
+- `POST /users` is replaced by `POST /auth/register` + `POST /auth/login`.
+- `JWT_SECRET` (32+ characters) is required; `JWT_EXPIRATION_HOURS` became
+  `JWT_EXPIRATION`.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## History
 
 The repository was created in December 2018; that first version, a
